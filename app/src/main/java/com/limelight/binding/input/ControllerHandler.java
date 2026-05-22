@@ -53,6 +53,7 @@ import org.cgutman.shieldcontrollerextensions.SceManager;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -766,6 +767,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
             }
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            logVibratorManager("InputDevice " + devName, dev.getVibratorManager());
+            if (!context.external || prefConfig.enableDeviceRumble) {
+                logVibratorManager("Android device", deviceVibratorManager);
+            }
+        }
+        LimeLog.info("Selected controller rumble route for " + devName + ": " + getRumbleRouteSummary(context));
+
         // On Android 12, we can try to use the InputDevice's sensors. This may not work if the
         // Linux kernel version doesn't have motion sensor support, which is common for third-party
         // gamepads.
@@ -1991,7 +2001,53 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     @TargetApi(31)
+    private void logVibratorManager(String label, VibratorManager vm) {
+        if (vm == null) {
+            LimeLog.info(label + " VibratorManager: unavailable");
+            return;
+        }
+
+        int[] vibratorIds = vm.getVibratorIds();
+        StringBuilder sb = new StringBuilder(label)
+                .append(" VibratorManager IDs: ")
+                .append(Arrays.toString(vibratorIds));
+
+        for (int vid : vibratorIds) {
+            Vibrator vibrator = vm.getVibrator(vid);
+            sb.append(" [id=")
+                    .append(vid)
+                    .append(", hasVibrator=")
+                    .append(vibrator.hasVibrator())
+                    .append(", amplitudeControl=")
+                    .append(vibrator.hasAmplitudeControl())
+                    .append("]");
+        }
+
+        LimeLog.info(sb.toString());
+    }
+
+    private String getRumbleRouteSummary(InputDeviceContext context) {
+        if (context.vibratorManager != null) {
+            return context.quadVibrators ? "VibratorManager quad motors" : "VibratorManager dual motors";
+        }
+
+        if (context.vibrator != null) {
+            return context.vibrator == deviceVibrator ? "Android device Vibrator" : "InputDevice Vibrator";
+        }
+
+        if (sceManager.isRecognizedDevice(context.inputDevice)) {
+            return "SHIELD controller extension";
+        }
+
+        return "none";
+    }
+
+    @TargetApi(31)
     private boolean hasDualAmplitudeControlledRumbleVibrators(VibratorManager vm) {
+        if (vm == null) {
+            return false;
+        }
+
         int[] vibratorIds = vm.getVibratorIds();
 
         // There must be exactly 2 vibrators on this device
@@ -2001,7 +2057,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         // Both vibrators must have amplitude control
         for (int vid : vibratorIds) {
-            if (!vm.getVibrator(vid).hasAmplitudeControl()) {
+            Vibrator vibrator = vm.getVibrator(vid);
+            if (!vibrator.hasVibrator() || !vibrator.hasAmplitudeControl()) {
                 return false;
             }
         }
@@ -2049,6 +2106,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @TargetApi(31)
     private boolean hasQuadAmplitudeControlledRumbleVibrators(VibratorManager vm) {
+        if (vm == null) {
+            return false;
+        }
+
         int[] vibratorIds = vm.getVibratorIds();
 
         // There must be exactly 4 vibrators on this device
@@ -2058,7 +2119,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
         // All vibrators must have amplitude control
         for (int vid : vibratorIds) {
-            if (!vm.getVibrator(vid).hasAmplitudeControl()) {
+            Vibrator vibrator = vm.getVibrator(vid);
+            if (!vibrator.hasVibrator() || !vibrator.hasAmplitudeControl()) {
                 return false;
             }
         }
@@ -3358,6 +3420,13 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                     supportedButtonFlags |= ControllerPacket.TOUCHPAD_FLAG;
                 }
             }
+
+            LimeLog.info("Reporting controller arrival: number=" + controllerNumber
+                    + ", name=" + name
+                    + ", type=" + reportedType
+                    + ", supportedButtons=0x" + Integer.toHexString(supportedButtonFlags)
+                    + ", capabilities=0x" + Integer.toHexString(capabilities & 0xffff)
+                    + ", rumbleRoute=" + getRumbleRouteSummary(this));
 
             conn.sendControllerArrivalEvent((byte)controllerNumber, getActiveControllerMask(),
                     reportedType, supportedButtonFlags, capabilities);

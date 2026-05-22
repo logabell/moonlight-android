@@ -8,8 +8,11 @@ import android.hardware.Sensor;
 import android.media.AudioAttributes;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.CombinedVibration;
+import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
@@ -22,9 +25,11 @@ import android.widget.Toast;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.utils.DeviceUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class DebugInfoActivity extends AppCompatActivity implements View.OnClickListener {
@@ -34,6 +39,7 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
     private Button bt_vibrator;
     private List<InputDevice> ids = new ArrayList<>();
     private Vibrator vibratorOnline;
+    private VibratorManager vibratorManagerOnline;
     private Button bt_vibrator_value;
     private int simulatedAmplitude = 220;
 
@@ -70,8 +76,13 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
     }
 
     private void cancleRumble() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && vibratorManagerOnline != null) {
+            vibratorManagerOnline.cancel();
+            vibratorManagerOnline = null;
+        }
         if (vibratorOnline != null) {
             vibratorOnline.cancel();
+            vibratorOnline = null;
         }
         if (vibrator != null) {
             vibrator.cancel();
@@ -118,7 +129,8 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
                     dialog.dismiss();
-                    if (ids.get(which).getVibrator().hasVibrator()) {
+                    InputDevice inputDevice = ids.get(which);
+                    if (hasGamepadRumble(inputDevice)) {
                         String[] titles = new String[]{getString(R.string.debug_info_simple_vibration), getString(R.string.debug_info_continuous_hd_vibration)};
                         new AlertDialog.Builder(DebugInfoActivity.this).setItems(titles, new DialogInterface.OnClickListener() {
                             @Override
@@ -126,12 +138,10 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
                                 dialog.dismiss();
                                 switch (which2) {
                                     case 0:
-                                        ids.get(which).getVibrator().vibrate(1000);
+                                        vibrateGamepadOnce(inputDevice);
                                         break;
                                     case 1:
-                                        cancleRumble();
-                                        vibratorOnline = ids.get(which).getVibrator();
-                                        rumble(vibratorOnline);
+                                        rumbleGamepad(inputDevice);
                                         break;
                                 }
                             }
@@ -193,12 +203,178 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
         }
     }
 
+    private boolean hasGamepadRumble(InputDevice inputDevice) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && hasAnyVibrator(inputDevice.getVibratorManager())) {
+            return true;
+        }
+
+        return inputDevice.getVibrator().hasVibrator();
+    }
+
+    private void vibrateGamepadOnce(InputDevice inputDevice) {
+        cancleRumble();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && vibrateVibratorManager(inputDevice.getVibratorManager(), 1000)) {
+            return;
+        }
+
+        Vibrator inputDeviceVibrator = inputDevice.getVibrator();
+        if (inputDeviceVibrator.hasVibrator()) {
+            inputDeviceVibrator.vibrate(1000);
+        }
+    }
+
+    private void rumbleGamepad(InputDevice inputDevice) {
+        cancleRumble();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && vibrateVibratorManager(inputDevice.getVibratorManager(), 60000)) {
+            return;
+        }
+
+        Vibrator inputDeviceVibrator = inputDevice.getVibrator();
+        if (inputDeviceVibrator.hasVibrator()) {
+            vibratorOnline = inputDeviceVibrator;
+            rumble(vibratorOnline);
+        }
+    }
+
+    private boolean hasAnyVibrator(VibratorManager vibratorManager) {
+        if (vibratorManager == null) {
+            return false;
+        }
+
+        for (int vibratorId : vibratorManager.getVibratorIds()) {
+            if (vibratorManager.getVibrator(vibratorId).hasVibrator()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private boolean hasDualAmplitudeControlledRumbleVibrators(VibratorManager vibratorManager) {
+        return hasAmplitudeControlledVibrators(vibratorManager, 2);
+    }
+
+    private boolean hasQuadAmplitudeControlledRumbleVibrators(VibratorManager vibratorManager) {
+        return hasAmplitudeControlledVibrators(vibratorManager, 4);
+    }
+
+    private boolean hasAmplitudeControlledVibrators(VibratorManager vibratorManager, int expectedCount) {
+        if (vibratorManager == null || vibratorManager.getVibratorIds().length != expectedCount) {
+            return false;
+        }
+
+        for (int vibratorId : vibratorManager.getVibratorIds()) {
+            Vibrator vibrator = vibratorManager.getVibrator(vibratorId);
+            if (!vibrator.hasVibrator() || !vibrator.hasAmplitudeControl()) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private boolean vibrateVibratorManager(VibratorManager vibratorManager, long durationMillis) {
+        if (vibratorManager == null) {
+            return false;
+        }
+
+        CombinedVibration.ParallelCombination combo = CombinedVibration.startParallel();
+        boolean addedVibrator = false;
+
+        for (int vibratorId : vibratorManager.getVibratorIds()) {
+            Vibrator vibrator = vibratorManager.getVibrator(vibratorId);
+            if (!vibrator.hasVibrator()) {
+                continue;
+            }
+
+            int amplitude = vibrator.hasAmplitudeControl() ? Math.max(1, simulatedAmplitude) : VibrationEffect.DEFAULT_AMPLITUDE;
+            combo.addVibrator(vibratorId, VibrationEffect.createOneShot(durationMillis, amplitude));
+            addedVibrator = true;
+        }
+
+        if (!addedVibrator) {
+            return false;
+        }
+
+        vibratorManagerOnline = vibratorManager;
+
+        VibrationAttributes.Builder vibrationAttributes = new VibrationAttributes.Builder();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            vibrationAttributes.setUsage(VibrationAttributes.USAGE_MEDIA);
+        }
+
+        vibratorManager.vibrate(combo.combine(), vibrationAttributes.build());
+        return true;
+    }
+
+    private void appendGamepadRumbleDiagnostics(StringBuffer sb, InputDevice dev) {
+        PreferenceConfiguration prefConfig = PreferenceConfiguration.readPreferences(this);
+        Vibrator inputDeviceVibrator = dev.getVibrator();
+
+        sb.append("Rumble prefs: enableRumble=").append(prefConfig.enableRumble)
+                .append(", forceDeviceRumble=").append(prefConfig.enableDeviceRumble)
+                .append(", fallbackToDevice=").append(prefConfig.vibrateFallbackToDevice)
+                .append(", fallbackStrength=").append(prefConfig.vibrateFallbackToDeviceStrength)
+                .append("%\n");
+
+        sb.append("Legacy Vibrator: hasVibrator=").append(inputDeviceVibrator.hasVibrator());
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            sb.append(", amplitudeControl=").append(inputDeviceVibrator.hasAmplitudeControl());
+        }
+        sb.append("\n");
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager vibratorManager = dev.getVibratorManager();
+            int[] vibratorIds = vibratorManager.getVibratorIds();
+
+            sb.append("VibratorManager IDs: ").append(Arrays.toString(vibratorIds)).append("\n");
+            for (int vibratorId : vibratorIds) {
+                Vibrator vibrator = vibratorManager.getVibrator(vibratorId);
+                sb.append("  id ").append(vibratorId)
+                        .append(": hasVibrator=").append(vibrator.hasVibrator())
+                        .append(", amplitudeControl=").append(vibrator.hasAmplitudeControl())
+                        .append("\n");
+            }
+
+            boolean dualManager = hasDualAmplitudeControlledRumbleVibrators(vibratorManager);
+            boolean quadManager = hasQuadAmplitudeControlledRumbleVibrators(vibratorManager);
+            sb.append("Artemis manager match: dual=").append(dualManager)
+                    .append(", quad=").append(quadManager)
+                    .append("\n");
+
+            sb.append("Predicted attached-device rumble path: ");
+            if (prefConfig.enableDeviceRumble) {
+                sb.append("forced Android device vibrator");
+            }
+            else if (quadManager) {
+                sb.append("VibratorManager quad motors (rumble + trigger rumble)");
+            }
+            else if (dualManager) {
+                sb.append("VibratorManager dual motors (rumble)");
+            }
+            else if (inputDeviceVibrator.hasVibrator()) {
+                sb.append("legacy InputDevice Vibrator");
+            }
+            else {
+                sb.append("none from this InputDevice");
+            }
+            sb.append("\n");
+        }
+        else {
+            sb.append("VibratorManager: unavailable before Android 12\n");
+        }
+
+        if (!prefConfig.enableRumble) {
+            sb.append("Host rumble callbacks are disabled by the Enable Rumble preference.\n");
+        }
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (vibratorOnline != null) {
-            vibratorOnline.cancel();
-        }
+        cancleRumble();
     }
 
     private void updateGamePad() {
@@ -239,8 +415,9 @@ public class DebugInfoActivity extends AppCompatActivity implements View.OnClick
                     sb.append(getString(R.string.debug_info_vid_pid) + dev.getVendorId() + "_" + dev.getProductId()
                             + "\t    [" + String.format("%04x", dev.getVendorId()) + "_" + String.format("%04x", dev.getProductId()) + "]");
                     sb.append("\n");
-                    sb.append(getString(R.string.debug_info_vibration) + (dev.getVibrator().hasVibrator() ? getString(R.string.debug_info_supported) : getString(R.string.debug_info_not_supported)));
+                    sb.append(getString(R.string.debug_info_vibration) + (hasGamepadRumble(dev) ? getString(R.string.debug_info_supported) : getString(R.string.debug_info_not_supported)));
                     sb.append("\n");
+                    appendGamepadRumbleDiagnostics(sb, dev);
                     sb.append(getString(R.string.debug_info_details) + "\n");
                     sb.append(dev.toString());
                     sb.append("\n");
